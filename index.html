@@ -63,6 +63,10 @@
   .monitor-btn:disabled{cursor:default;}
   .monitor-count{margin-top:10px; text-align:center; font-size:12.5px; font-weight:600; color:var(--bark);}
   .monitor-count b{color:var(--ink);}
+  .monitor-name-input{width:100%; padding:12px 14px; margin-bottom:10px; border-radius:12px;
+    border:1px solid var(--hairline); font-family:'Nunito',sans-serif; font-size:14px; font-weight:600;
+    color:var(--ink); background:var(--cream);}
+  .monitor-name-input:focus{outline:none; border-color:var(--forest);}
 
   .gmaps-link{display:block; text-align:center; margin-top:10px; font-size:13px; font-weight:700;
     color:var(--forest); text-decoration:none;}
@@ -132,6 +136,7 @@
         <span class="label">Check-in expected by</span>
         <span class="value" id="expected-time">—</span>
       </div>
+      <input type="text" id="monitor-name-input" class="monitor-name-input" placeholder="Your name (optional)" maxlength="30">
       <button class="monitor-btn" id="monitor-btn">I'm Monitoring</button>
       <a class="gmaps-link hidden" id="gmaps-link" target="_blank" rel="noopener">Open current location in Google Maps →</a>
       <p class="monitor-count" id="monitor-count"></p>
@@ -166,6 +171,7 @@ const subText = document.getElementById('sub-text');
 const expectedTime = document.getElementById('expected-time');
 const mapOverlay = document.getElementById('map-overlay');
 const monitorBtn = document.getElementById('monitor-btn');
+const monitorNameInput = document.getElementById('monitor-name-input');
 const monitorCount = document.getElementById('monitor-count');
 const gmapsLink = document.getElementById('gmaps-link');
 const notifBanner = document.getElementById('notif-banner');
@@ -277,6 +283,7 @@ function renderStatus(session, {isUpdate} = {isUpdate: false}){
     headlineText.textContent = `${session.user_name} is safe`;
     subText.textContent = 'This session has ended and will deactivate shortly.';
     monitorBtn.classList.add('hidden');
+    monitorNameInput.classList.add('hidden');
     monitorCount.textContent = '';
     if (stateChanged) sendNotification(`${session.user_name} is now safe.`);
     handleEnding(session, `${session.user_name} has safely checked in.`);
@@ -302,8 +309,7 @@ async function loadInitial(){
     coords.forEach(c => pushCoordinate(c.lat, c.lng));
   }
 
-  const { count } = await sb.from('monitors').select('*', {count:'exact', head:true}).eq('session_id', sessionId);
-  updateMonitorCount(count || 0);
+  await refreshMonitors();
 
   const deviceId = getDeviceId();
   const { data: existing } = await sb.from('monitors').select('device_id').eq('session_id', sessionId).eq('device_id', deviceId).maybeSingle();
@@ -311,8 +317,21 @@ async function loadInitial(){
   return true;
 }
 
-function updateMonitorCount(n){
-  monitorCount.textContent = n === 0 ? '' : `${n} ${n === 1 ? 'person is' : 'people are'} monitoring`;
+async function refreshMonitors(){
+  const { data } = await sb.from('monitors').select('name').eq('session_id', sessionId);
+  const rows = data || [];
+  const n = rows.length;
+  if (n === 0){ monitorCount.textContent = ''; return; }
+  const names = rows.map(r => r.name).filter(Boolean);
+  if (names.length === 0){
+    monitorCount.textContent = `${n} ${n === 1 ? 'person is' : 'people are'} monitoring`;
+  } else if (names.length === n){
+    monitorCount.textContent = names.length <= 2
+      ? `${names.join(' and ')} ${names.length === 1 ? 'is' : 'are'} monitoring`
+      : `${names.slice(0, 2).join(', ')} and ${names.length - 2} other${names.length - 2 === 1 ? '' : 's'} are monitoring`;
+  } else {
+    monitorCount.textContent = `${names.slice(0, 2).join(', ')} and ${n - names.length} more are monitoring`;
+  }
 }
 
 function getDeviceId(){
@@ -325,12 +344,14 @@ function setMonitoringOn(){
   monitorBtn.textContent = "You're Monitoring ✓";
   monitorBtn.classList.add('on');
   monitorBtn.disabled = true;
+  monitorNameInput.classList.add('hidden');
 }
 
 monitorBtn.addEventListener('click', async () => {
   monitorBtn.disabled = true;
   const deviceId = getDeviceId();
-  const { error } = await sb.from('monitors').insert({ session_id: sessionId, device_id: deviceId });
+  const name = monitorNameInput.value.trim() || null;
+  const { error } = await sb.from('monitors').insert({ session_id: sessionId, device_id: deviceId, name });
   if (!error) setMonitoringOn();
   else { monitorBtn.disabled = false; }
 });
@@ -346,10 +367,7 @@ function subscribeRealtime(){
 
   _monitorChannel = sb.channel(`monitors-${sessionId}`)
     .on('postgres_changes', { event:'INSERT', schema:'public', table:'monitors', filter:`session_id=eq.${sessionId}` },
-      async () => {
-        const { count } = await sb.from('monitors').select('*', {count:'exact', head:true}).eq('session_id', sessionId);
-        updateMonitorCount(count || 0);
-      })
+      () => refreshMonitors())
     .subscribe();
 }
 
